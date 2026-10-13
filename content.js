@@ -7,6 +7,7 @@
 
   const STORAGE_KEY = '__cgpt_next_question_queue_v1';
   const IDLE_MS = 1300;
+  const SEND_BUTTON_TIMEOUT_MS = 4500;
   const ACK_TIMEOUT_MS = 5500;
   const START_TIMEOUT_MS = 11000;
   const TICK_MS = 350;
@@ -14,12 +15,17 @@
   const selectors = {
     composer: [
       '#prompt-textarea[contenteditable="true"]',
-      '#prompt-textarea',
+      '[data-testid="prompt-textarea"][contenteditable="true"]',
       '[data-testid="composer-input"][contenteditable="true"]',
-      '[contenteditable="true"][data-placeholder]',
-      '[contenteditable="true"][role="textbox"]',
-      'textarea[placeholder*="Message"]',
-      'textarea[placeholder*="消息"]'
+      'form [contenteditable="true"][data-lexical-editor="true"]',
+      'form .ProseMirror[contenteditable="true"]',
+      '#prompt-textarea',
+      '[data-testid="prompt-textarea"]',
+      'form [contenteditable="true"][role="textbox"]',
+      'form [contenteditable="true"][data-placeholder]',
+      'form textarea[name="prompt-textarea"]',
+      'form textarea[placeholder*="Message"]',
+      'form textarea[placeholder*="消息"]'
     ],
     send: [
       'button[data-testid="send-button"]',
@@ -28,13 +34,17 @@
       'button[aria-label="Send prompt"]',
       'button[aria-label="Send message"]',
       'button[aria-label="发送提示词"]',
-      'button[aria-label="发送消息"]'
+      'button[aria-label="发送消息"]',
+      'button.composer-submit-btn',
+      'button[type="submit"]'
     ],
     stop: [
       'button[data-testid="stop-button"]',
       'button[data-testid="stop-generating-button"]',
+      'button[data-testid="composer-stop-button"]',
       'button[aria-label="Stop generating"]',
       'button[aria-label="Stop response"]',
+      'button[aria-label="Stop streaming"]',
       'button[aria-label="Stop"]',
       'button[aria-label="停止生成"]',
       'button[aria-label="停止回答"]',
@@ -42,33 +52,63 @@
     ]
   };
 
-  const first = (list) => {
-    for (const selector of list) {
-      const el = document.querySelector(selector);
-      if (el) return el;
+  // ChatGPT has several composer implementations (ProseMirror, Lexical and
+  // textarea). Some also keep hidden buttons in the DOM after a response.
+  function visible(element) {
+    if (!element || !element.isConnected || !element.getClientRects().length) return false;
+    const style = window.getComputedStyle(element);
+    return style.visibility !== 'hidden' && style.display !== 'none';
+  }
+
+  function normalizeEditor(candidate) {
+    if (!candidate) return null;
+    if (candidate.matches('textarea, [contenteditable="true"]')) return candidate;
+    return candidate.querySelector('[contenteditable="true"],textarea');
+  }
+
+  function getComposer() {
+    for (const selector of selectors.composer) {
+      for (const candidate of document.querySelectorAll(selector)) {
+        const editor = normalizeEditor(candidate);
+        if (visible(editor)) return editor;
+      }
     }
     return null;
-  };
+  }
 
-  function getComposer() { return first(selectors.composer); }
+  function findComposerForm() {
+    const editor = getComposer();
+    return editor?.closest('form') || null;
+  }
+
+  // The Send button often DOES NOT EXIST while the editor is empty. Never
+  // require it before inserting text; resolve it after the editor reacts.
   function getSendButton() {
-    const candidate = first(selectors.send);
-    if (candidate) return candidate;
-    // A semantic fallback rather than guessing the last button in a form.
-    return [...document.querySelectorAll('button[aria-label],button[title]')].find(btn => {
+    const form = findComposerForm();
+    if (!form) return null;
+    for (const selector of selectors.send) {
+      const candidate = [...form.querySelectorAll(selector)].find(visible);
+      if (candidate && !candidate.matches(selectors.stop.join(','))) return candidate;
+    }
+    return [...form.querySelectorAll('button[aria-label], button[title]')].find(btn => {
+      if (!visible(btn)) return false;
       const label = (btn.getAttribute('aria-label') || btn.title || '').trim();
       return /^(send|send prompt|send message|发送|发送消息|发送提示词)$/i.test(label);
     }) || null;
   }
+
   function isBusy() {
-    if (first(selectors.stop)) return true;
-    return [...document.querySelectorAll('button[aria-label],button[title]')].some(btn => {
+    if (selectors.stop.some(selector => [...document.querySelectorAll(selector)].some(visible))) return true;
+    const form = findComposerForm();
+    if (!form) return false;
+    return [...form.querySelectorAll('button[aria-label], button[title]')].some(btn => {
+      if (!visible(btn)) return false;
       const label = (btn.getAttribute('aria-label') || btn.title || '').trim();
       return /^(stop|stop generating|stop response|stop streaming|停止|停止生成|停止回答)$/i.test(label);
     });
   }
   function isDisabled(button) {
-    return !button || button.disabled || button.getAttribute('aria-disabled') === 'true';
+    return !visible(button) || button.disabled || button.getAttribute('aria-disabled') === 'true';
   }
   function editorText(editor) {
     return (editor instanceof HTMLTextAreaElement ? editor.value : editor.innerText || editor.textContent || '').trim();
@@ -189,7 +229,7 @@
     // insertText generates ProseMirror's expected beforeinput/input events.
     const okay = document.execCommand('insertText', false, text);
     sel.removeAllRanges();
-    return !!okay && editorText(editor).length > 0;
+    return (okay || editorText(editor) === text.trim()) && editorText(editor) === text.trim();
   }
 
   function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
@@ -200,7 +240,7 @@
     const sameChat = () => chatKey === startKey || (isRootChat(startKey) && /^\/c\/[^/]+/.test(new URL(chatKey).pathname));
     const item = queue()[0];
     const editor = getComposer();
-    if (!editor || !getSendButton()) { setStatus('找不到 ChatGPT 输入框或发送按钮；已等待页面就绪'); return; }
+    if (!editor) { setStatus('找不到 ChatGPT 输入框；请检查页面是否已加载'); return; }
     if (editorText(editor)) { setStatus('输入框有未发送的草稿；清空后会继续队列'); return; }
     if (hasAttachments()) { setStatus('检测到附件；请先处理附件，暂不自动发送纯文本队列'); return; }
     sending = true;
@@ -209,14 +249,18 @@
       if (!insertComposerText(editor, item.text)) throw new Error('无法写入输入框，已暂停以免丢失问题');
       // Let the site's editor state update before looking up the send button.
       let sendButton = null;
-      for (let attempt = 0; attempt < 12; attempt++) {
-        await sleep(120);
+      for (let attempt = 0; attempt < Math.ceil(SEND_BUTTON_TIMEOUT_MS / 150); attempt++) {
+        await sleep(150);
         if (!sameChat() || paused) throw new Error('对话已切换或队列已暂停');
         sendButton = getSendButton();
         if (!isDisabled(sendButton)) break;
       }
-      if (isDisabled(sendButton)) throw new Error('发送按钮不可用；请检查输入框');
+      if (isDisabled(sendButton)) throw new Error('写入问题后仍找不到可用发送按钮；请检查 ChatGPT 页面或换用普通聊天模式');
       if (isBusy()) throw new Error('上一条回复还在生成；没有发送');
+      // Some builds replace the voice icon with Send only after input events.
+      // Resolve a fresh reference to avoid clicking a stale, detached element.
+      sendButton = getSendButton();
+      if (isDisabled(sendButton)) throw new Error('发送按钮更新后不可用；已暂停');
       sendButton.click();
       const clickedAt = Date.now();
       let acknowledged = false;

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ChatGPT 下一问队列",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "在 ChatGPT 回复时按 Enter 将问题加入队列，回复结束后依次自动发送。",
   "content_scripts": [
     {
