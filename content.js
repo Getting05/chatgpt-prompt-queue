@@ -130,9 +130,9 @@
   let chatKey = getChatKey();
   // Never resume automatic actions unexpectedly after reload.
   let paused = Object.keys(saved).length > 0; // first install runs automatically; page refresh pauses
-  let expanded = saved.expanded !== false;
+  let expanded = false; // The panel always starts collapsed on page load.
   let nativeEnter = saved.nativeEnter !== false;
-  let statusMessage = paused ? '刷新后已安全暂停；点击“继续自动发送”恢复' : '自动发送已启用，可直接排队';
+  let statusMessage = paused ? '已暂停' : '';
   let sending = false;
   let sawBusyDuringSend = false;
   let waitingForStart = false;
@@ -146,7 +146,7 @@
     return queues[chatKey];
   }
   function persist() {
-    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ queues, expanded, nativeEnter })); }
+    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ queues, nativeEnter })); }
     catch { statusMessage = '存储空间不足；刷新可能丢失队列'; }
   }
   function setStatus(msg) { statusMessage = msg; render(); }
@@ -155,7 +155,7 @@
     if (!content) return false;
     queue().push({ id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, text: content });
     persist();
-    setStatus(`已排队 ${queue().length} 条；${paused ? '点“继续自动发送”启动' : '将自动发送'}`);
+    setStatus(paused ? '已加入 · 已暂停' : '已加入队列');
     return true;
   }
   function remove(id) {
@@ -185,7 +185,7 @@
       paused = true;
       waitingForStart = false;
       sending = false;
-      setStatus('已切换对话，自动发送已暂停；旧队列按对话分别保留');
+      setStatus('已切换对话 · 暂停');
     }
     chatKey = newKey;
     busyBefore = isBusy();
@@ -240,43 +240,43 @@
     const sameChat = () => chatKey === startKey || (isRootChat(startKey) && /^\/c\/[^/]+/.test(new URL(chatKey).pathname));
     const item = queue()[0];
     const editor = getComposer();
-    if (!editor) { setStatus('找不到 ChatGPT 输入框；请检查页面是否已加载'); return; }
-    if (editorText(editor)) { setStatus('输入框有未发送的草稿；清空后会继续队列'); return; }
-    if (hasAttachments()) { setStatus('检测到附件；请先处理附件，暂不自动发送纯文本队列'); return; }
+    if (!editor) { setStatus('找不到输入框'); return; }
+    if (editorText(editor)) { setStatus('请先清空输入框'); return; }
+    if (hasAttachments()) { setStatus('请先移除附件'); return; }
     sending = true;
     sawBusyDuringSend = false;
     try {
-      if (!insertComposerText(editor, item.text)) throw new Error('无法写入输入框，已暂停以免丢失问题');
+      if (!insertComposerText(editor, item.text)) throw new Error('写入失败');
       // Let the site's editor state update before looking up the send button.
       let sendButton = null;
       for (let attempt = 0; attempt < Math.ceil(SEND_BUTTON_TIMEOUT_MS / 150); attempt++) {
         await sleep(150);
-        if (!sameChat() || paused) throw new Error('对话已切换或队列已暂停');
+        if (!sameChat() || paused) throw new Error('对话已切换');
         sendButton = getSendButton();
         if (!isDisabled(sendButton)) break;
       }
-      if (isDisabled(sendButton)) throw new Error('写入问题后仍找不到可用发送按钮；请检查 ChatGPT 页面或换用普通聊天模式');
-      if (isBusy()) throw new Error('上一条回复还在生成；没有发送');
+      if (isDisabled(sendButton)) throw new Error('发送按钮不可用');
+      if (isBusy()) throw new Error('仍在回复中');
       // Some builds replace the voice icon with Send only after input events.
       // Resolve a fresh reference to avoid clicking a stale, detached element.
       sendButton = getSendButton();
-      if (isDisabled(sendButton)) throw new Error('发送按钮更新后不可用；已暂停');
+      if (isDisabled(sendButton)) throw new Error('发送按钮失效');
       sendButton.click();
       const clickedAt = Date.now();
       let acknowledged = false;
       while (Date.now() - clickedAt < ACK_TIMEOUT_MS) {
         await sleep(150);
-        if (!sameChat()) throw new Error('提交过程中对话已切换，请检查是否已发送');
+        if (!sameChat()) throw new Error('对话已切换，请检查消息');
         if (isBusy() || sawBusyDuringSend || !editorText(editor)) { acknowledged = true; break; }
       }
-      if (!acknowledged) throw new Error('未确认是否提交成功；已暂停防止重复发送，请人工检查');
+      if (!acknowledged) throw new Error('发送状态不明，请检查');
       // Remove only AFTER the site acknowledges submission (busy or editor clear).
       if (queue()[0]?.id === item.id) queue().shift();
       waitingForStart = !(isBusy() || sawBusyDuringSend);
       waitingSince = Date.now();
       idleSince = 0;
       persist();
-      setStatus(waitingForStart ? '已提交，等待识别回答开始' : '已提交，等待 ChatGPT 回答结束');
+      setStatus(waitingForStart ? '等待回复' : '回复中');
     } catch (err) {
       paused = true;
       setStatus(`已暂停：${err.message}`);
@@ -291,70 +291,130 @@
     if (!isBusy()) return;
     const editor = getComposer();
     if (!editor || !(editor === event.target || editor.contains(event.target))) return;
-    if (hasAttachments()) { setStatus('原生输入框含附件，暂不拦截 Enter'); return; }
+    if (hasAttachments()) { setStatus('请先移除附件'); return; }
     const text = editorText(editor);
     if (!text) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    if (!clearComposer(editor)) { setStatus('未能安全清空输入框，请改用悬浮面板排队'); return; }
+    if (!clearComposer(editor)) { setStatus('无法清空，请使用面板'); return; }
     add(text);
   }
 
-  // The panel is a shadow root so ChatGPT's own styles don't break the extension.
+  // Match ChatGPT's selected site theme, which may differ from the OS theme.
+  // Always start collapsed, including when an older extension saved expanded=true.
+  function pageTheme() {
+    const root = document.documentElement;
+    const body = document.body;
+    const preference = [root.getAttribute('data-theme'), root.getAttribute('data-color-mode'),
+      body?.getAttribute('data-theme'), body?.getAttribute('data-color-mode')]
+      .find(value => /^(dark|light)$/i.test(value || ''));
+    if (preference) return preference.toLowerCase();
+    if (root.classList.contains('dark') || body?.classList.contains('dark')) return 'dark';
+    if (root.classList.contains('light') || body?.classList.contains('light')) return 'light';
+    const scheme = window.getComputedStyle(root).colorScheme;
+    if (scheme === 'dark' || scheme === 'light') return scheme;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+
   const host = document.createElement('div');
   host.id = 'cgpt-queue-extension-host';
-  host.style.cssText = 'position:fixed;bottom:92px;right:16px;z-index:2147483647;max-width:calc(100vw - 32px);';
+  host.style.cssText = 'position:fixed;bottom:90px;right:18px;z-index:2147483647;max-width:calc(100vw - 36px);';
   const shadow = host.attachShadow({ mode: 'open' });
+  function syncTheme() {
+    const theme = pageTheme();
+    if (host.dataset.theme !== theme) host.dataset.theme = theme;
+  }
+
   const style = document.createElement('style');
   style.textContent = `
-    :host { all: initial; font-family: system-ui,-apple-system,"Segoe UI",sans-serif; color-scheme: light dark; }
+    :host {
+      all: initial; display:block; font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+      font-size:13px; line-height:1.4; color-scheme:light;
+      --cq-panel:#fff; --cq-surface:#f4f4f4; --cq-text:#171717;
+      --cq-muted:#6b6b6b; --cq-border:#e5e5e5; --cq-hover:#ededed;
+      --cq-action:#171717; --cq-action-text:#fff;
+    }
+    :host([data-theme="dark"]) {
+      color-scheme:dark; --cq-panel:#212121; --cq-surface:#303030;
+      --cq-text:#f5f5f5; --cq-muted:#b0b0b0; --cq-border:#424242;
+      --cq-hover:#393939; --cq-action:#f5f5f5; --cq-action-text:#171717;
+    }
     * { box-sizing:border-box; }
-    #pill { appearance:none; background:#197a65; color:white; border:0; border-radius:999px; padding:11px 17px; font-weight:700; cursor:pointer; box-shadow:0 5px 22px #0003; float:right; }
-    #panel { width:340px; max-width:calc(100vw - 32px); max-height:min(560px,72vh); display:flex; flex-direction:column; background:#fff; color:#20242a; border:1px solid #d6dedc; border-radius:15px; box-shadow:0 10px 42px #0003; overflow:hidden; font-size:13px; }
-    .top { display:flex; align-items:center; justify-content:space-between; gap:9px; padding:13px 14px; background:#f4f8f7; border-bottom:1px solid #e0e8e5; }
-    .title { font-weight:750; font-size:15px; }
-    .body { padding:12px; display:flex; flex-direction:column; gap:10px; overflow:auto; }
-    .muted { color:#596b66; font-size:12px; }
-    #status { background:#f2f6f5; border-radius:8px; padding:8px; overflow-wrap:anywhere; line-height:1.5; }
-    textarea { display:block; width:100%; min-height:76px; padding:10px; resize:vertical; border:1px solid #c4d5cf; border-radius:8px; background:white; color:#20242a; font:inherit; outline-offset:2px; }
-    button { font:inherit; cursor:pointer; }
-    .btn { padding:7px 10px; border:1px solid #c5d0cc; border-radius:8px; background:#fff; color:#26332f; }
-    .btn.primary { background:#197a65; color:#fff; border-color:#197a65; font-weight:650; }
-    .btn.small { padding:4px 7px; }
-    .btn:disabled { cursor:not-allowed; opacity:0.5; }
-    .actions, .queuehead { display:flex; flex-wrap:wrap; gap:6px; align-items:center; justify-content:space-between; }
-    .queuehead { padding-top:4px; border-top:1px solid #e7edeb; font-weight:650; }
-    .item { display:flex; gap:6px; border:1px solid #e0e8e5; border-radius:9px; padding:8px; margin-top:6px; }
-    .itemtext { min-width:0; flex:1; white-space:pre-wrap; overflow-wrap:anywhere; max-height:75px; overflow:auto; }
-    .itembuttons { display:flex; flex-direction:column; gap:3px; }
-    .itembuttons button { width:24px; height:22px; padding:0; background:#f6f9f8; border:1px solid #d9e5e1; border-radius:5px; }
-    label { display:flex; gap:6px; align-items:center; cursor:pointer; }
-    input[type=checkbox] { accent-color:#197a65; }
-    .hint { line-height:1.55; }
-    @media (prefers-color-scheme:dark) { #panel { background:#212521; color:#f1f5f3; border-color:#4b5650; } .top { background:#303730; border-color:#4b5650; } #status,.itembuttons button { background:#303730; color:#f1f5f3; } .muted { color:#b2c1b8; } .btn,textarea { background:#252b28; color:#f1f5f3; border-color:#4b5650; } .btn.primary { background:#197a65; } .queuehead { border-color:#4b5650; } .item { border-color:#4b5650; } .itembuttons button { border-color:#4b5650; } }
+    button, textarea, input { font:inherit; }
+    button { cursor:pointer; }
+    button:focus-visible,textarea:focus-visible,input:focus-visible { outline:2px solid var(--cq-muted); outline-offset:2px; }
+    #pill {
+      display:flex; align-items:center; gap:8px; float:right; border:1px solid var(--cq-border);
+      padding:8px 13px; border-radius:999px; background:var(--cq-panel); color:var(--cq-text);
+      font-weight:600; box-shadow:0 3px 14px #00000018; white-space:nowrap;
+    }
+    #pill:hover { background:var(--cq-surface); }
+    #panel {
+      width:320px; max-width:calc(100vw - 36px); max-height:min(470px,70vh);
+      display:flex; flex-direction:column; background:var(--cq-panel); color:var(--cq-text);
+      border:1px solid var(--cq-border); border-radius:16px;
+      box-shadow:0 8px 30px #00000024; overflow:hidden;
+    }
+    .top { display:flex; justify-content:space-between; align-items:center; padding:13px 14px 8px; gap:10px; }
+    .title { font-size:14px; font-weight:650; }
+    .header-right { display:flex; align-items:center; gap:8px; }
+    #count { font-size:12px; color:var(--cq-muted); white-space:nowrap; }
+    .body { padding:4px 12px 12px; display:flex; flex-direction:column; gap:9px; overflow-y:auto; }
+    .muted { color:var(--cq-muted); font-size:12px; }
+    #draft { width:100%; min-height:64px; max-height:180px; resize:vertical; padding:10px 11px;
+      border:1px solid var(--cq-border); border-radius:12px; background:var(--cq-surface);
+      color:var(--cq-text); outline-offset:1px; }
+    #draft::placeholder { color:var(--cq-muted); }
+    .btn { border:0; border-radius:9px; background:transparent; color:var(--cq-text); padding:6px 9px; }
+    .btn:hover { background:var(--cq-hover); }
+    .btn.primary { background:var(--cq-action); color:var(--cq-action-text); font-weight:600; padding:7px 12px; }
+    .btn.primary:hover { opacity:.88; }
+    .btn:disabled { cursor:not-allowed; opacity:.4; }
+    .iconbtn { width:28px; height:28px; display:grid; place-items:center; font-size:20px; }
+    .composer-actions, .queuehead, .actions { display:flex; align-items:center; gap:4px; }
+    .composer-actions, .queuehead { justify-content:space-between; }
+    .queuehead { border-top:1px solid var(--cq-border); padding-top:8px; }
+    #status { font-size:12px; color:var(--cq-muted); line-height:1.45; overflow-wrap:anywhere; min-width:0; }
+    #items { display:flex; flex-direction:column; gap:5px; }
+    .item { display:flex; align-items:flex-start; gap:4px; background:var(--cq-surface);
+      border-radius:10px; padding:8px 8px 8px 10px; }
+    .itemtext { min-width:0; flex:1; white-space:pre-wrap; overflow-wrap:anywhere;
+      max-height:70px; overflow:auto; line-height:1.45; }
+    .itembuttons { display:flex; align-items:center; gap:0; }
+    .itembuttons button { width:22px; height:24px; padding:0; border:0; background:transparent;
+      color:var(--cq-muted); border-radius:5px; }
+    .itembuttons button:hover:not(:disabled) { background:var(--cq-hover); color:var(--cq-text); }
+    .itembuttons button:disabled { opacity:.25; cursor:default; }
+    .setting { display:flex; align-items:center; gap:8px; cursor:pointer; font-size:12px; color:var(--cq-muted); }
+    .setting input { accent-color:var(--cq-text); margin:0; }
+    .empty { padding:8px 1px; }
   `;
   shadow.append(style);
   const pill = document.createElement('button');
   pill.id = 'pill';
+  pill.type = 'button';
+  pill.setAttribute('aria-label', '展开待发送队列');
   const panel = document.createElement('section');
   panel.id = 'panel';
+  panel.setAttribute('aria-label', '待发送队列');
   panel.innerHTML = `
-    <div class="top"><span class="title">ChatGPT 下一问队列</span><button class="btn small" id="collapse" title="收起">收起 −</button></div>
+    <div class="top">
+      <span class="title">下一问</span>
+      <div class="header-right"><span id="count">待发送 (0)</span><button class="btn iconbtn" id="collapse" aria-label="收起" title="收起">×</button></div>
+    </div>
     <div class="body">
-      <div id="status" role="status" aria-live="polite"></div>
-      <textarea id="draft" placeholder="输入下一条问题（支持多行）"></textarea>
-      <div class="actions"><button class="btn primary" id="add">加入待发队列</button><span class="muted">Ctrl / ⌘ + Enter 入队</span></div>
-      <div class="queuehead"><span id="count">待发送 (0)</span><div class="actions"><button class="btn small" id="toggle">继续自动发送</button><button class="btn small" id="clear">清空</button></div></div>
+      <textarea id="draft" placeholder="输入下一条问题…" aria-label="下一条问题"></textarea>
+      <div class="composer-actions"><span class="muted">⌘ / Ctrl + Enter</span><button class="btn primary" id="add">加入队列</button></div>
+      <div class="queuehead"><span id="status" role="status" aria-live="polite"></span><div class="actions"><button class="btn" id="toggle">暂停</button><button class="btn" id="clear">清空</button></div></div>
       <div id="items"></div>
-      <label><input type="checkbox" id="native-enter" checked><span>生成期间在原输入框按 Enter 排队</span></label>
-      <div class="muted hint">Shift + Enter 仍可换行。只自动发送纯文本；切换对话或刷新后会暂停，防止误发。</div>
+      <label class="setting"><input type="checkbox" id="native-enter" checked><span>原输入框 Enter 入队</span></label>
     </div>`;
   shadow.append(pill, panel);
   document.documentElement.appendChild(host);
   const $ = id => shadow.getElementById(id);
 
-  pill.addEventListener('click', () => { expanded = true; persist(); render(); });
-  $('collapse').addEventListener('click', () => { expanded = false; persist(); render(); });
+  pill.addEventListener('click', () => { expanded = true; render(); });
+  $('collapse').addEventListener('click', () => { expanded = false; render(); });
   $('add').addEventListener('click', () => {
     if (add($('draft').value)) $('draft').value = '';
     $('draft').focus();
@@ -368,7 +428,7 @@
   $('toggle').addEventListener('click', () => {
     paused = !paused;
     if (paused) waitingForStart = false;
-    setStatus(paused ? '队列已手动暂停' : '已启动；当前回答结束后自动发送');
+    setStatus(paused ? '已暂停' : '已继续');
   });
   $('clear').addEventListener('click', () => {
     if (!queue().length) return;
@@ -389,18 +449,19 @@
   });
 
   function render() {
+    syncTheme();
     const arr = queue();
     pill.hidden = expanded;
     panel.hidden = !expanded;
     // CSS display properties override hidden in some cases, so force explicit display.
     pill.style.display = expanded ? 'none' : 'block';
     panel.style.display = expanded ? 'flex' : 'none';
-    pill.textContent = `待发送 ${arr.length} 条 ${paused ? '⏸' : '▶'}`;
+    pill.textContent = `☷ 队列 ${arr.length}${paused && arr.length ? ' · 暂停' : ''}`;
     $('count').textContent = `待发送 (${arr.length})`;
-    $('toggle').textContent = paused ? '▶ 继续自动发送' : '⏸ 暂停';
+    $('toggle').textContent = paused ? '继续' : '暂停';
     $('native-enter').checked = nativeEnter;
     const busy = isBusy();
-    const statusText = `${busy ? '● ChatGPT 正在生成' : '○ ChatGPT 暂未检测到生成'} · ${paused ? '已暂停' : '自动发送开启'}\n${statusMessage}`;
+    const statusText = statusMessage || (paused ? '已暂停' : busy ? '回复中' : '自动发送已开启');
     if ($('status').textContent !== statusText) $('status').textContent = statusText;
     const signature = JSON.stringify({ arr, sending });
     if (signature === lastRenderSignature) return;
@@ -429,8 +490,8 @@
     });
     if (!arr.length) {
       const empty = document.createElement('div');
-      empty.className = 'muted';
-      empty.textContent = '暂无待发送问题';
+      empty.className = 'muted empty';
+      empty.textContent = '暂无问题';
       list.append(empty);
     }
   }
@@ -452,7 +513,7 @@
     if (waitingForStart && !busy && Date.now() - waitingSince > START_TIMEOUT_MS) {
       paused = true;
       waitingForStart = false;
-      setStatus('未观察到新回复开始，已暂停后续发送，避免连续误发');
+      setStatus('等待回复超时 · 已暂停');
     }
     if (!paused && !sending && !waitingForStart && !busy && queue().length && idleSince && Date.now() - idleSince >= IDLE_MS) {
       void sendNext();

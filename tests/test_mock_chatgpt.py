@@ -40,6 +40,7 @@ def test_enqueue_and_sequential_send():
         assert '1' in n and not inp.inner_text().strip(), 'Native Enter queue failed'
 
         panel=page.locator('#cgpt-queue-extension-host')
+        panel.locator('#pill').click()
         panel.locator('#draft').fill('问题 C')
         panel.locator('#add').click()
         assert '2' in panel.locator('#count').inner_text()
@@ -71,6 +72,7 @@ def test_manual_pause_prevents_auto_send_until_resumed():
         editor.fill('等待恢复的问题')
         editor.press('Enter')
         panel = page.locator('#cgpt-queue-extension-host')
+        panel.locator('#pill').click()
         assert '1' in panel.locator('#count').inner_text()
         panel.locator('#toggle').click()
         page.evaluate('window.finish()')

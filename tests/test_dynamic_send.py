@@ -79,6 +79,7 @@ def test_send_button_absent_until_text_inserted():
         browser = launch_browser(p)
         page = browser.new_page()
         host = install(page, mock_page('<div class="ProseMirror" contenteditable="true" role="textbox"></div>'))
+        host.locator('#pill').click()
         assert page.locator('[data-testid="send-button"]').count() == 0
         host.locator('#draft').fill('问题：动态发送按钮')
         host.locator('#add').click()
@@ -96,6 +97,7 @@ def test_lexical_editor_and_hidden_stale_stop_button():
         host = install(page, mock_page('''<div data-testid="prompt-textarea">
             <div contenteditable="true" data-lexical-editor="true" role="textbox"></div>
         </div>''', hidden_stop=True))
+        host.locator('#pill').click()
         host.locator('#draft').fill('Lexical queued')
         host.locator('#add').click()
         page.evaluate('window.finish()')
@@ -109,6 +111,7 @@ def test_no_send_button_does_not_lose_prompt_or_retry():
         browser = launch_browser(p)
         page = browser.new_page()
         host = install(page, mock_page('<div id="prompt-textarea" contenteditable="true"></div>', never_show_send=True))
+        host.locator('#pill').click()
         host.locator('#draft').fill('Keep this queued')
         host.locator('#add').click()
         page.evaluate('window.finish()')

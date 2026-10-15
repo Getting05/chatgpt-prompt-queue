@@ -10,8 +10,8 @@ A lightweight, local-only browser extension that queues prompts while ChatGPT is
 
 - **原生输入框排队**：ChatGPT 正在生成时，输入下一条问题并按 `Enter` 入队；`Shift + Enter` 仍然换行。
 - **自动连续发送**：检测到当前回答结束，等待约 1.3 秒后发送队首问题，重复直到队列清空；兼容输入文本后才出现的发送按钮。
-- **悬浮队列**：可以添加多行问题、查看顺序、上移/下移、删除或清空。
-- **安全暂停**：支持手动暂停；页面刷新或切换对话后自动暂停，避免误发。
+- **悬浮队列**：默认收起，点击右下角小按钮展开；可添加、排序、删除或清空问题。
+- **主题同步**：面板随 ChatGPT 网页内的浅色／深色主题切换，采用简洁的中性色界面。\n- **安全暂停**：支持手动暂停；页面刷新或切换对话后自动暂停，避免误发。
 - **本地存储**：每个浏览器标签页独立，按对话 URL 在该标签页 `sessionStorage` 保存队列。
 - **最小权限**：不需要 OpenAI API Key、后端服务器、Cookie 访问权限或额外浏览器扩展权限。
 
@@ -21,7 +21,7 @@ A lightweight, local-only browser extension that queues prompts while ChatGPT is
 2. Chrome 打开 `chrome://extensions`；Edge 打开 `edge://extensions`。
 3. 开启右上角的 **开发者模式**。
 4. 点击 **加载已解压的扩展程序（Load unpacked）**，选择包含 `manifest.json` 的仓库根目录。
-5. 刷新 `https://chatgpt.com`，右下角将显示「下一问队列」。
+5. 刷新 `https://chatgpt.com`，右下角将显示收起的「队列」按钮。
 
 安装后不需要启动任何后台服务。更新本地代码时，在扩展管理页点击该扩展的**重新加载**按钮，**再刷新 ChatGPT 标签页**。如果队列显示「已暂停」，点击「继续自动发送」恢复。
 
@@ -32,9 +32,9 @@ A lightweight, local-only browser extension that queues prompts while ChatGPT is
 3. 继续输入问题 C 并按 `Enter`。
 4. A 结束后自动发送 B；B 结束后自动发送 C。
 
-也可以在右下角的悬浮面板添加待发问题：点击 **加入待发队列**，或使用 `Ctrl / ⌘ + Enter`。
+也可以展开右下角的「队列」面板，点击 **加入队列**，或使用 `Ctrl / ⌘ + Enter`。
 
-**默认行为**：首次打开自动发送开启；刷新或切换对话后自动暂停，需要在悬浮面板中点击「继续自动发送」。
+**默认行为**：面板始终从收起状态启动；首次安装自动发送开启。刷新或切换对话后会暂停，需要在面板中点击「继续」。
 
 ## 安全和限制
 
@@ -47,10 +47,17 @@ A lightweight, local-only browser extension that queues prompts while ChatGPT is
 
 ## 无法自动发送时
 
-1. 检查悬浮面板是否显示「已暂停」；刷新或切换对话后，需要点击「继续自动发送」。
+1. 若面板显示「已暂停」，点击「继续」。
 2. 若提示「输入框有未发送的草稿」，先手动清空 ChatGPT 原生输入框。
-3. 若提示「写入问题后仍找不到可用发送按钮」，检查扩展是否已更新到 v1.0.1，前往 `chrome://extensions` 或 `edge://extensions` 点击**重新加载**，再刷新 ChatGPT 页面。
+3. 若提示「发送按钮不可用」，重新加载扩展并刷新 ChatGPT 页面。
 4. 仍无法使用时，可复制面板中的状态文字并提交 [Issue](https://github.com/Getting05/chatgpt-prompt-queue/issues)，附上操作步骤和 ChatGPT 页面语言（不要提供聊天隐私内容）。
+
+### v1.0.2 界面更新
+
+- 默认收起，旧版本保存过展开状态也不影响；不占据主要聊天空间。
+- 浅色／深色模式跟随 **ChatGPT 页面设置**，而不是仅跟随操作系统。
+- 精简为中性色面板、单行状态和必要的队列操作。
+- 新增收起状态、主题切换和原有自动发送流程的回归测试。
 
 ### v1.0.1 修复
 
